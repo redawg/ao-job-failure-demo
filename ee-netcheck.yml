@@ -1,0 +1,30 @@
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - uri:
+        url: http://aap-aap-operator.apps.127.0.0.1.nip.io/api/controller/v2/ping/
+        validate_certs: false
+        status_code: [200, 000]
+      register: a
+      ignore_errors: true
+    - uri:
+        url: https://aap-aap-operator.apps.127.0.0.1.nip.io/api/controller/v2/ping/
+        validate_certs: false
+      register: b
+      ignore_errors: true
+    - uri:
+        url: https://automation-orchestrator.apps.127.0.0.1.nip.io/api/v1/healthz
+        validate_certs: false
+      register: c
+      ignore_errors: true
+    - uri:
+        url: http://automation-orchestrator-backend.automation-orchestrator.svc:8000/api/v1/healthz
+      register: d
+      ignore_errors: true
+    - debug:
+        msg:
+          - "http_aap={{ a.status | default(a.msg) }}"
+          - "https_aap={{ b.status | default(b.msg) }}"
+          - "https_ao={{ c.status | default(c.msg) }}"
+          - "svc_ao={{ d.status | default(d.msg) }}"
