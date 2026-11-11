@@ -1,0 +1,23 @@
+---
+# Intentionally broken playbook for AO job-failure triage demos.
+# First run fails with a clear Ansible parameter error the AI can diagnose.
+# Remediation job template: "AO Demo | Fix localhost playbook"
+- name: AO demo broken localhost playbook
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Write demo app config (contains a deliberate playbook bug)
+      ansible.builtin.copy:
+        dest: /tmp/ao-demo-app.conf
+        content: |
+          # Managed by AO demo
+          ready=true
+          app=ao-job-failure-triage
+        # BUG: typo — Ansible rejects unsupported parameter "modee" (should be "mode").
+        modee: "0644"
+
+    - name: Confirm demo config is present
+      ansible.builtin.command: grep ready=true /tmp/ao-demo-app.conf
+      register: ready_check
+      changed_when: false

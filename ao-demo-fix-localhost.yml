@@ -1,0 +1,26 @@
+---
+# Corrected version of ao-demo-broken-localhost.yml.
+# Fixes the unsupported "modee" parameter typo (use "mode") and writes the demo config.
+- name: AO demo fixed localhost playbook
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Write demo app config with corrected copy parameters
+      ansible.builtin.copy:
+        dest: /tmp/ao-demo-app.conf
+        content: |
+          # Managed by AO demo
+          ready=true
+          app=ao-job-failure-triage
+          fixed=true
+        mode: "0644"
+
+    - name: Confirm demo config is present
+      ansible.builtin.command: grep ready=true /tmp/ao-demo-app.conf
+      register: ready_check
+      changed_when: false
+
+    - name: Show success
+      ansible.builtin.debug:
+        msg: "Fixed playbook succeeded. Config: {{ ready_check.stdout }}"

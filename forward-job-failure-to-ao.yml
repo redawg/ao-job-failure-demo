@@ -1,0 +1,54 @@
+---
+# Forward an AAP job-failure notification into Automation Orchestrator.
+# Used by the "AO | Forward Job Failure" job template so AO can triage
+# failed jobs via the aap-job-failed webhook trigger.
+- name: Forward job failure to Automation Orchestrator
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ao_base_url: "{{ ao_base_url | mandatory }}"
+    ao_client_id: "{{ ao_client_id | mandatory }}"
+    ao_client_secret: "{{ ao_client_secret | mandatory }}"
+    ao_webhook_path: "{{ ao_webhook_path | default('aap-job-failed') }}"
+    failed_job_id: "{{ failed_job_id | mandatory }}"
+    failed_job_name: "{{ failed_job_name | default('') }}"
+  tasks:
+    - name: Skip recursive notifications from this forwarder
+      ansible.builtin.meta: end_play
+      when: "'Forward Job Failure' in (failed_job_name | string)"
+
+    - name: Obtain AO service account token
+      ansible.builtin.uri:
+        url: "{{ ao_base_url }}/api/v1/auth/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          grant_type: client_credentials
+          client_id: "{{ ao_client_id }}"
+          client_secret: "{{ ao_client_secret }}"
+        validate_certs: false
+        status_code: [200]
+      register: ao_token
+      no_log: true
+
+    - name: Post failure payload to AO webhook
+      ansible.builtin.uri:
+        url: "{{ ao_base_url }}/api/v1/webhooks/{{ ao_webhook_path }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ao_token.json.access_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          job_id: "{{ failed_job_id | int }}"
+          name: "{{ failed_job_name }}"
+          status: "{{ failed_job_status | default('failed') }}"
+          source: aap-notification
+        validate_certs: false
+        status_code: [202]
+      register: ao_webhook
+
+    - name: Show AO workflow execution id
+      ansible.builtin.debug:
+        msg: "AO workflow started: {{ ao_webhook.json.execution_id | default(ao_webhook.json) }}"
