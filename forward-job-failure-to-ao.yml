@@ -12,13 +12,14 @@
     ao_webhook_path: "{{ ao_webhook_path | default('aap-job-failed') }}"
     failed_job_id: "{{ failed_job_id | default(0) }}"
     failed_job_name: "{{ failed_job_name | default('AO Demo | Broken localhost playbook') }}"
+    failed_job_status: "{{ failed_job_status | default('failed') }}"
     aap_api_url: "{{ aap_api_url | default('https://aap-aap-operator.apps.127.0.0.1.nip.io') }}"
   tasks:
     - name: Skip recursive notifications from this forwarder
       ansible.builtin.meta: end_play
       when: "'Forward Job Failure' in (failed_job_name | string)"
 
-    - name: Resolve latest failed job when failed_job_id was not provided
+    - name: Resolve failed job id when not provided
       when: (failed_job_id | int) == 0
       block:
         - name: Require AAP API credential for job lookup
@@ -30,26 +31,109 @@
               failed_job_id is 0/missing; provide failed_job_id or attach an AAP API credential
               that injects aap_api_username / aap_api_password.
 
-        - name: Look up latest failed job by name
-          ansible.builtin.uri:
-            url: >-
-              {{ aap_api_url }}/api/controller/v2/jobs/?search={{ 'Broken localhost' | urlencode }}&status=failed&order_by=-finished&page_size=1
-            user: "{{ aap_api_username }}"
-            password: "{{ aap_api_password }}"
-            force_basic_auth: true
-            validate_certs: false
-            status_code: [200]
-          register: failed_jobs_lookup
-
-        - name: Require at least one failed job match
-          ansible.builtin.assert:
-            that:
-              - failed_jobs_lookup.json.results | length > 0
-            fail_msg: "No failed jobs found named '{{ failed_job_name }}'"
-
-        - name: Set failed_job_id from lookup
+        - name: Read current job id from the execution environment
           ansible.builtin.set_fact:
-            failed_job_id: "{{ failed_jobs_lookup.json.results[0].id }}"
+            forwarder_job_id: "{{ lookup('env', 'JOB_ID') | default('', true) }}"
+
+        - name: Prefer sibling failed job from the parent workflow
+          when: forwarder_job_id | length > 0
+          block:
+            - name: Retrieve this forwarder job metadata
+              ansible.builtin.uri:
+                url: "{{ aap_api_url }}/api/controller/v2/jobs/{{ forwarder_job_id }}/"
+                user: "{{ aap_api_username }}"
+                password: "{{ aap_api_password }}"
+                force_basic_auth: true
+                validate_certs: false
+                status_code: [200]
+              register: forwarder_job
+              no_log: true
+
+            - name: Capture source workflow job id
+              ansible.builtin.set_fact:
+                source_workflow_job_id: >-
+                  {{ forwarder_job.json.summary_fields.source_workflow_job.id
+                     | default(forwarder_job.json.source_workflow_job | default(0), true) }}
+
+            - name: List parent workflow nodes
+              when: (source_workflow_job_id | int) > 0
+              ansible.builtin.uri:
+                url: "{{ aap_api_url }}/api/controller/v2/workflow_jobs/{{ source_workflow_job_id }}/workflow_nodes/?page_size=100"
+                user: "{{ aap_api_username }}"
+                password: "{{ aap_api_password }}"
+                force_basic_auth: true
+                validate_certs: false
+                status_code: [200]
+              register: workflow_nodes
+              no_log: true
+
+            - name: Pick failed sibling job from workflow
+              when:
+                - (source_workflow_job_id | int) > 0
+                - (workflow_nodes.json.results | default([])) | length > 0
+              ansible.builtin.set_fact:
+                failed_job_id: >-
+                  {{
+                    (
+                      workflow_nodes.json.results
+                      | selectattr('summary_fields.job', 'defined')
+                      | selectattr('summary_fields.job.failed', 'defined')
+                      | selectattr('summary_fields.job.failed')
+                      | map(attribute='summary_fields.job.id')
+                      | list
+                      | first
+                    )
+                    | default(0, true)
+                  }}
+                failed_job_name: >-
+                  {{
+                    (
+                      workflow_nodes.json.results
+                      | selectattr('summary_fields.job', 'defined')
+                      | selectattr('summary_fields.job.failed', 'defined')
+                      | selectattr('summary_fields.job.failed')
+                      | map(attribute='summary_fields.job.name')
+                      | list
+                      | first
+                    )
+                    | default(failed_job_name, true)
+                  }}
+
+        - name: Fall back to latest failed job search by name
+          when: (failed_job_id | int) == 0
+          block:
+            - name: Look up latest failed job by name
+              ansible.builtin.uri:
+                url: >-
+                  {{ aap_api_url }}/api/controller/v2/jobs/?search={{ 'Broken localhost' | urlencode }}&status=failed&order_by=-finished&page_size=5
+                user: "{{ aap_api_username }}"
+                password: "{{ aap_api_password }}"
+                force_basic_auth: true
+                validate_certs: false
+                return_content: true
+                status_code: [200, 401, 403, 404]
+              register: failed_jobs_lookup
+              no_log: true
+
+            - name: Require a successful job lookup response
+              ansible.builtin.assert:
+                that:
+                  - failed_jobs_lookup.status == 200
+                fail_msg: >-
+                  AAP job lookup failed with HTTP {{ failed_jobs_lookup.status | default('unknown') }}.
+                  Check the aap-demo API admin credential (username/password must authenticate to
+                  {{ aap_api_url }}).
+
+            - name: Require at least one failed job match
+              ansible.builtin.assert:
+                that:
+                  - (failed_jobs_lookup.json.results | default([])) | length > 0
+                fail_msg: "No failed jobs found matching 'Broken localhost'"
+
+            - name: Set failed_job_id from lookup
+              ansible.builtin.set_fact:
+                failed_job_id: "{{ failed_jobs_lookup.json.results[0].id }}"
+                failed_job_name: "{{ failed_jobs_lookup.json.results[0].name | default(failed_job_name) }}"
 
     - name: Obtain AO service account token
       ansible.builtin.uri:
@@ -76,7 +160,7 @@
         body:
           job_id: "{{ failed_job_id | int }}"
           name: "{{ failed_job_name }}"
-          status: "{{ failed_job_status | default('failed') }}"
+          status: "{{ failed_job_status }}"
           source: aap-forwarder
         validate_certs: false
         status_code: [202]

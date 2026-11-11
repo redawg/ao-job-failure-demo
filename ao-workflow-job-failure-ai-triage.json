@@ -1,0 +1,355 @@
+{
+  "name": "AAP Job Failure - AI Triage and Remediation",
+  "edges": [
+    {
+      "from": "trigger_webhook",
+      "to": "analyze_failure"
+    },
+    {
+      "from": "analyze_failure",
+      "to": "choose_action"
+    },
+    {
+      "from": "choose_action",
+      "to": "create_fix_template",
+      "from_port": "approved"
+    },
+    {
+      "from": "create_fix_template",
+      "to": "sync_project"
+    },
+    {
+      "from": "sync_project",
+      "to": "verify_template_ready"
+    },
+    {
+      "from": "verify_template_ready",
+      "to": "run_prepared_fix"
+    },
+    {
+      "from": "choose_action",
+      "to": "rerun_failed_hosts",
+      "from_port": "rejected"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "analyze_failure",
+      "name": "AI Diagnose Failure",
+      "type": "agentic",
+      "position": {
+        "x": 340.0,
+        "y": 280.0
+      },
+      "parameters": {
+        "prompt": "You are an Ansible Automation Platform SRE assistant. A job failed and you must diagnose it and propose remediation options.\n\nFailed job ID: ${trigger_webhook.job_id}\n\nUse AAP MCP tools (do not invent data):\n1. Call jobs_retrieve with id=${trigger_webhook.job_id}. Capture job name, status, job_template name/id, inventory, and related fields.\n2. Call jobs_stdout_retrieve for the same job. Focus on the last failure traceback / fatal / UNREACHABLE / failed task messages.\n3. Call jobs_job_host_summaries_list for the job. Collect hosts with failed/unreachable status into a comma-separated host pattern for Ansible limit.\n4. Call jobs_job_events_list filtered to failed events if needed for root cause detail.\n5. Call job_templates_list and projects_list / projects_playbooks_retrieve if useful to identify a remediating playbook in SCM.\n\nThen decide:\n- diagnosis: concise root-cause summary for an operator\n- failed_hosts: comma-separated host limit string for failed/unreachable hosts only (empty string if none)\n- original_job_template: exact job template name of the failed job (for re-run)\n- fix_playbook: exact playbook filename in the project that remediates the failure (e.g. ao-demo-fix-localhost.yml)\n- proposed_fix_template_name: a NEW job template name the platform should create after approval (include the failed job id). Example: AO Demo | AI Fix for job ${trigger_webhook.job_id}\n- project_name: exact AAP project name that contains the fix playbook (usually 'AO Job Failure Demo')\n- fix_rationale: why that playbook/template helps\n- recommendations: 2-4 short bullet-style recommendations (plain text)\n- confidence: high|medium|low\n\nDo NOT create templates, sync projects, or launch jobs. Analysis only.\n\nOutput ONLY valid JSON:\n{\n  \"diagnosis\": \"\",\n  \"failed_hosts\": \"\",\n  \"original_job_template\": \"\",\n  \"fix_playbook\": \"\",\n  \"proposed_fix_template_name\": \"\",\n  \"project_name\": \"\",\n  \"fix_rationale\": \"\",\n  \"recommendations\": \"\",\n  \"confidence\": \"medium\"\n}\n\nIf the failure is an unsupported parameter typo like 'modee' instead of 'mode' on ansible.builtin.copy, set fix_playbook to exactly 'ao-demo-fix-localhost.yml', project_name to 'AO Job Failure Demo', and proposed_fix_template_name to 'AO Demo | AI Fix for job ${trigger_webhook.job_id}'.",
+        "llm_model_id": "40412e01-aa9c-4983-8c53-490a647618bf",
+        "credential_id": "75c64dfa-d3d2-4c9c-8b26-7245f5798ce0",
+        "response_schema": {
+          "type": "object",
+          "required": [
+            "diagnosis",
+            "failed_hosts",
+            "original_job_template",
+            "fix_playbook",
+            "proposed_fix_template_name",
+            "project_name",
+            "fix_rationale",
+            "recommendations",
+            "confidence"
+          ],
+          "properties": {
+            "diagnosis": {
+              "type": "string"
+            },
+            "failed_hosts": {
+              "type": "string"
+            },
+            "original_job_template": {
+              "type": "string"
+            },
+            "fix_playbook": {
+              "type": "string"
+            },
+            "proposed_fix_template_name": {
+              "type": "string"
+            },
+            "project_name": {
+              "type": "string"
+            },
+            "fix_rationale": {
+              "type": "string"
+            },
+            "recommendations": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "string"
+            }
+          }
+        },
+        "integration_connections": [
+          {
+            "credential_id": "5e5890ac-d87f-4952-8c52-3db56e68033b",
+            "integration_id": "8f515ab5-4f3b-4d26-8312-fffd99c368fb"
+          }
+        ],
+        "tool_selection_strategy": "ALL"
+      }
+    },
+    {
+      "id": "choose_action",
+      "name": "Approve=prepare+run fix | Reject=re-run failed hosts",
+      "type": "approval",
+      "position": {
+        "x": 720.0,
+        "y": 280.0
+      },
+      "parameters": {}
+    },
+    {
+      "id": "rerun_failed_hosts",
+      "name": "Re-run Original Job on Failed Hosts",
+      "type": "aap_job_template",
+      "position": {
+        "x": 1100.0,
+        "y": 440.0
+      },
+      "parameters": {
+        "limit": "${analyze_failure.result.content.failed_hosts}",
+        "diff_mode": false,
+        "extra_vars": {
+          "diagnosis": "${analyze_failure.result.content.diagnosis}",
+          "failed_job_id": "${trigger_webhook.job_id}",
+          "remediation_source": "ao-job-failure-rerun"
+        },
+        "credential_id": "8c2b6f2c-2222-4f35-a7eb-6912c61833b7",
+        "integration_id": "f8b01d58-9b7c-43ec-9e55-defbfbed4e69",
+        "job_template_name": "${analyze_failure.result.content.original_job_template}",
+        "organization_name": "Default"
+      }
+    },
+    {
+      "id": "create_fix_template",
+      "name": "AI Create Fix Job Template",
+      "type": "agentic",
+      "position": {
+        "x": 1100.0,
+        "y": 80.0
+      },
+      "parameters": {
+        "prompt": "You are preparing AAP to run an approved remediation. Create (or reuse) a job template for the fix playbook using AAP MCP tools only. Do not launch the job.\n\nContext from diagnosis:\n- Failed job ID: ${trigger_webhook.job_id}\n- Diagnosis: ${analyze_failure.result.content.diagnosis}\n- Fix playbook: ${analyze_failure.result.content.fix_playbook}\n- Proposed template name: ${analyze_failure.result.content.proposed_fix_template_name}\n- Project name: ${analyze_failure.result.content.project_name}\n\nRequired MCP steps:\n1. Call projects_list and locate the project named exactly '${analyze_failure.result.content.project_name}' (fallback search for 'AO Job Failure Demo'). Capture project id and organization id.\n2. Call job_templates_list (use search/name filters if available) and look for a template named exactly '${analyze_failure.result.content.proposed_fix_template_name}'.\n3. If it does not exist, call job_templates_create with requestBody including at least:\n   - name: ${analyze_failure.result.content.proposed_fix_template_name}\n   - description: AI-prepared remediation for failed job ${trigger_webhook.job_id}. ${analyze_failure.result.content.fix_rationale}\n   - job_type: run\n   - inventory: 1  (Demo Inventory)\n   - project: <project id from step 1>\n   - playbook: ${analyze_failure.result.content.fix_playbook}\n   - organization: 1 (or the project's organization)\n   - ask_limit_on_launch: true\n4. If create fails because the name exists, retrieve/list again and reuse that template.\n5. Call job_templates_retrieve on the resulting template id and confirm name + playbook.\n\nDo NOT sync the project and do NOT launch any job in this step.\n\nOutput ONLY valid JSON:\n{\n  \"prepared_job_template\": \"\",\n  \"template_id\": \"\",\n  \"project_id\": \"\",\n  \"playbook\": \"\",\n  \"created\": \"true\",\n  \"notes\": \"\"\n}\nUse created=true if job_templates_create succeeded, otherwise created=false.",
+        "llm_model_id": "40412e01-aa9c-4983-8c53-490a647618bf",
+        "credential_id": "75c64dfa-d3d2-4c9c-8b26-7245f5798ce0",
+        "response_schema": {
+          "type": "object",
+          "required": [
+            "prepared_job_template",
+            "template_id",
+            "project_id",
+            "playbook",
+            "created",
+            "notes"
+          ],
+          "properties": {
+            "prepared_job_template": {
+              "type": "string"
+            },
+            "template_id": {
+              "type": "string"
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "playbook": {
+              "type": "string"
+            },
+            "created": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "integration_connections": [
+          {
+            "credential_id": "5e5890ac-d87f-4952-8c52-3db56e68033b",
+            "integration_id": "8f515ab5-4f3b-4d26-8312-fffd99c368fb"
+          }
+        ],
+        "tool_selection_strategy": "ALL"
+      }
+    },
+    {
+      "id": "sync_project",
+      "name": "AI Sync Project Playbooks",
+      "type": "agentic",
+      "position": {
+        "x": 1440.0,
+        "y": 80.0
+      },
+      "parameters": {
+        "prompt": "You are syncing/refreshing AAP project content so the newly prepared fix template can run.\n\nContext:\n- Project name: ${analyze_failure.result.content.project_name}\n- Project id hint: ${create_fix_template.result.content.project_id}\n- Fix playbook required: ${analyze_failure.result.content.fix_playbook}\n- Prepared template: ${create_fix_template.result.content.prepared_job_template}\n\nAAP MCP does not expose a dedicated projects_update/sync tool. Perform the closest readiness sync checks with available tools:\n1. Call projects_list and locate project id ${create_fix_template.result.content.project_id} (or by name '${analyze_failure.result.content.project_name}'). Capture status/scm fields.\n2. Call projects_playbooks_retrieve with that project id.\n3. Confirm '${analyze_failure.result.content.fix_playbook}' is present in the returned playbook list.\n4. If the playbook is missing, set sync_status=failed and explain that the SCM project must be updated in AAP UI/API. If present and project status is successful (or playbooks are listed), set sync_status=synced.\n5. Optionally re-check job_templates_retrieve for template id ${create_fix_template.result.content.template_id}.\n\nDo NOT create templates and do NOT launch jobs.\n\nOutput ONLY valid JSON:\n{\n  \"project_id\": \"\",\n  \"project_name\": \"\",\n  \"playbook\": \"\",\n  \"playbook_present\": \"true\",\n  \"sync_status\": \"synced\",\n  \"notes\": \"\"\n}",
+        "llm_model_id": "40412e01-aa9c-4983-8c53-490a647618bf",
+        "credential_id": "75c64dfa-d3d2-4c9c-8b26-7245f5798ce0",
+        "response_schema": {
+          "type": "object",
+          "required": [
+            "project_id",
+            "project_name",
+            "playbook",
+            "playbook_present",
+            "sync_status",
+            "notes"
+          ],
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "project_name": {
+              "type": "string"
+            },
+            "playbook": {
+              "type": "string"
+            },
+            "playbook_present": {
+              "type": "string"
+            },
+            "sync_status": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "integration_connections": [
+          {
+            "credential_id": "5e5890ac-d87f-4952-8c52-3db56e68033b",
+            "integration_id": "8f515ab5-4f3b-4d26-8312-fffd99c368fb"
+          }
+        ],
+        "tool_selection_strategy": "ALL"
+      }
+    },
+    {
+      "id": "verify_template_ready",
+      "name": "AI Verify Template Ready",
+      "type": "agentic",
+      "position": {
+        "x": 1780.0,
+        "y": 80.0
+      },
+      "parameters": {
+        "prompt": "You are the final readiness gate before AAP runs the approved fix.\n\nContext:\n- Prepared template name: ${create_fix_template.result.content.prepared_job_template}\n- Template id: ${create_fix_template.result.content.template_id}\n- Sync status: ${sync_project.result.content.sync_status}\n- Playbook present: ${sync_project.result.content.playbook_present}\n- Failed hosts limit: ${analyze_failure.result.content.failed_hosts}\n\nUse AAP MCP tools:\n1. Call job_templates_retrieve with id=${create_fix_template.result.content.template_id} (or list/search by name if id empty).\n2. Verify the template name matches, playbook matches ${analyze_failure.result.content.fix_playbook}, and it is usable.\n3. If sync_status is not synced or playbook_present is not true, set ready=false and explain blockers.\n4. Otherwise set ready=true and return the exact template name the AAP job-template step must launch.\n\nDo NOT launch the job.\n\nOutput ONLY valid JSON:\n{\n  \"ready\": \"true\",\n  \"prepared_job_template\": \"\",\n  \"template_id\": \"\",\n  \"limit\": \"\",\n  \"blockers\": \"\",\n  \"notes\": \"\"\n}\nSet limit to the failed_hosts value (may be empty).",
+        "llm_model_id": "40412e01-aa9c-4983-8c53-490a647618bf",
+        "credential_id": "75c64dfa-d3d2-4c9c-8b26-7245f5798ce0",
+        "response_schema": {
+          "type": "object",
+          "required": [
+            "ready",
+            "prepared_job_template",
+            "template_id",
+            "limit",
+            "blockers",
+            "notes"
+          ],
+          "properties": {
+            "ready": {
+              "type": "string"
+            },
+            "prepared_job_template": {
+              "type": "string"
+            },
+            "template_id": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "string"
+            },
+            "blockers": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "integration_connections": [
+          {
+            "credential_id": "5e5890ac-d87f-4952-8c52-3db56e68033b",
+            "integration_id": "8f515ab5-4f3b-4d26-8312-fffd99c368fb"
+          }
+        ],
+        "tool_selection_strategy": "ALL"
+      }
+    },
+    {
+      "id": "run_prepared_fix",
+      "name": "Run Prepared Fix on Platform",
+      "type": "aap_job_template",
+      "position": {
+        "x": 2120.0,
+        "y": 80.0
+      },
+      "parameters": {
+        "limit": "${verify_template_ready.result.content.limit}",
+        "diff_mode": false,
+        "extra_vars": {
+          "diagnosis": "${analyze_failure.result.content.diagnosis}",
+          "failed_job_id": "${trigger_webhook.job_id}",
+          "remediation_source": "ao-job-failure-ai-prepared-fix",
+          "prepared_template_id": "${verify_template_ready.result.content.template_id}"
+        },
+        "credential_id": "8c2b6f2c-2222-4f35-a7eb-6912c61833b7",
+        "integration_id": "f8b01d58-9b7c-43ec-9e55-defbfbed4e69",
+        "job_template_name": "${verify_template_ready.result.content.prepared_job_template}",
+        "organization_name": "Default"
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "id": "trigger_webhook",
+      "name": "AAP Job Failed",
+      "type": "webhook_trigger",
+      "position": {
+        "x": 0,
+        "y": 280
+      },
+      "parameters": {
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "job_id"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "job_id": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "Failed AAP job ID"
+            },
+            "source": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          }
+        },
+        "webhook_path": "aap-job-failed",
+        "authorized_service_account_ids": [
+          "e8f8ed51-142d-404b-af08-f6675bc91768"
+        ]
+      }
+    }
+  ],
+  "description": "When an AAP job fails, an AI agent uses the AAP MCP server to diagnose the failure and recommend a fix playbook. Approve runs a prepare path: AI creates a new fix job template, syncs/verifies project playbooks, confirms the template is ready, then the platform launches that prepared fix. Reject re-runs the original job on failed hosts only. Triggered by webhook aap-job-failed.",
+  "schema_version": "2.0.0"
+}
