@@ -13,7 +13,8 @@
     failed_job_id: "{{ failed_job_id | default(0) }}"
     failed_job_name: "{{ failed_job_name | default('AO Demo | Broken localhost playbook') }}"
     failed_job_status: "{{ failed_job_status | default('failed') }}"
-    aap_api_url: "{{ aap_api_url | default('https://aap-aap-operator.apps.127.0.0.1.nip.io') }}"
+    # Container-group EEs hostAlias AAP to the gateway ClusterIP (HTTP/80). HTTPS to that alias times out.
+    aap_api_url: "{{ aap_api_url | default('http://aap-aap-operator.apps.127.0.0.1.nip.io') }}"
   tasks:
     - name: Skip recursive notifications from this forwarder
       ansible.builtin.meta: end_play
