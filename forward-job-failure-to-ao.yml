@@ -10,6 +10,7 @@
     ao_client_id: "{{ ao_client_id | mandatory }}"
     ao_client_secret: "{{ ao_client_secret | mandatory }}"
     ao_webhook_path: "{{ ao_webhook_path | default('aap-job-failed') }}"
+    # Launch/survey extra_vars win over set_fact — never rely on overriding failed_job_id in place.
     failed_job_id: "{{ failed_job_id | default(0) }}"
     failed_job_name: "{{ failed_job_name | default('AO Demo | Broken localhost playbook') }}"
     failed_job_status: "{{ failed_job_status | default('failed') }}"
@@ -20,8 +21,14 @@
       ansible.builtin.meta: end_play
       when: "'Forward Job Failure' in (failed_job_name | string)"
 
+    - name: Seed resolved job fields from launch variables
+      ansible.builtin.set_fact:
+        resolved_failed_job_id: "{{ failed_job_id | int }}"
+        resolved_failed_job_name: "{{ failed_job_name }}"
+        resolved_failed_job_status: "{{ failed_job_status }}"
+
     - name: Resolve failed job id when not provided
-      when: (failed_job_id | int) == 0
+      when: (resolved_failed_job_id | int) == 0
       block:
         - name: Require AAP API credential for job lookup
           ansible.builtin.assert:
@@ -54,7 +61,7 @@
               ansible.builtin.set_fact:
                 source_workflow_job_id: >-
                   {{ forwarder_job.json.summary_fields.source_workflow_job.id
-                     | default(forwarder_job.json.source_workflow_job | default(0), true) }}
+                     | default(0, true) }}
 
             - name: List parent workflow nodes
               when: (source_workflow_job_id | int) > 0
@@ -72,36 +79,20 @@
               when:
                 - (source_workflow_job_id | int) > 0
                 - (workflow_nodes.json.results | default([])) | length > 0
+              vars:
+                failed_siblings: >-
+                  {{
+                    workflow_nodes.json.results
+                    | selectattr('summary_fields.job', 'defined')
+                    | selectattr('summary_fields.job.failed')
+                    | list
+                  }}
               ansible.builtin.set_fact:
-                failed_job_id: >-
-                  {{
-                    (
-                      workflow_nodes.json.results
-                      | selectattr('summary_fields.job', 'defined')
-                      | selectattr('summary_fields.job.failed', 'defined')
-                      | selectattr('summary_fields.job.failed')
-                      | map(attribute='summary_fields.job.id')
-                      | list
-                      | first
-                    )
-                    | default(0, true)
-                  }}
-                failed_job_name: >-
-                  {{
-                    (
-                      workflow_nodes.json.results
-                      | selectattr('summary_fields.job', 'defined')
-                      | selectattr('summary_fields.job.failed', 'defined')
-                      | selectattr('summary_fields.job.failed')
-                      | map(attribute='summary_fields.job.name')
-                      | list
-                      | first
-                    )
-                    | default(failed_job_name, true)
-                  }}
+                resolved_failed_job_id: "{{ (failed_siblings | map(attribute='summary_fields.job.id') | list | first) | default(0, true) }}"
+                resolved_failed_job_name: "{{ (failed_siblings | map(attribute='summary_fields.job.name') | list | first) | default(resolved_failed_job_name, true) }}"
 
         - name: Fall back to latest failed job search by name
-          when: (failed_job_id | int) == 0
+          when: (resolved_failed_job_id | int) == 0
           block:
             - name: Look up latest failed job by name
               ansible.builtin.uri:
@@ -131,10 +122,16 @@
                   - (failed_jobs_lookup.json.results | default([])) | length > 0
                 fail_msg: "No failed jobs found matching 'Broken localhost'"
 
-            - name: Set failed_job_id from lookup
+            - name: Set resolved failed job from lookup
               ansible.builtin.set_fact:
-                failed_job_id: "{{ failed_jobs_lookup.json.results[0].id }}"
-                failed_job_name: "{{ failed_jobs_lookup.json.results[0].name | default(failed_job_name) }}"
+                resolved_failed_job_id: "{{ failed_jobs_lookup.json.results[0].id }}"
+                resolved_failed_job_name: "{{ failed_jobs_lookup.json.results[0].name | default(resolved_failed_job_name) }}"
+
+    - name: Require a concrete failed job id before calling AO
+      ansible.builtin.assert:
+        that:
+          - (resolved_failed_job_id | int) > 0
+        fail_msg: "Could not resolve a failed_job_id to send to Automation Orchestrator"
 
     - name: Obtain AO service account token
       ansible.builtin.uri:
@@ -159,9 +156,9 @@
           Content-Type: application/json
         body_format: json
         body:
-          job_id: "{{ failed_job_id | int }}"
-          name: "{{ failed_job_name }}"
-          status: "{{ failed_job_status }}"
+          job_id: "{{ resolved_failed_job_id | int }}"
+          name: "{{ resolved_failed_job_name }}"
+          status: "{{ resolved_failed_job_status }}"
           source: aap-forwarder
         validate_certs: false
         status_code: [202]
@@ -169,4 +166,6 @@
 
     - name: Show AO workflow execution id
       ansible.builtin.debug:
-        msg: "AO workflow started: {{ ao_webhook.json.execution_id | default(ao_webhook.json) }} for job {{ failed_job_id }}"
+        msg: >-
+          AO workflow started: {{ ao_webhook.json.execution_id | default(ao_webhook.json) }}
+          for job {{ resolved_failed_job_id }}
