@@ -33,14 +33,13 @@
         - name: Look up latest failed job by name
           ansible.builtin.uri:
             url: >-
-              {{ aap_api_url }}/api/controller/v2/jobs/?name={{ failed_job_name | urlencode }}&status=failed&order_by=-finished&page_size=1
+              {{ aap_api_url }}/api/controller/v2/jobs/?search={{ 'Broken localhost' | urlencode }}&status=failed&order_by=-finished&page_size=1
             user: "{{ aap_api_username }}"
             password: "{{ aap_api_password }}"
             force_basic_auth: true
             validate_certs: false
             status_code: [200]
           register: failed_jobs_lookup
-          no_log: true
 
         - name: Require at least one failed job match
           ansible.builtin.assert:
