@@ -1,7 +1,6 @@
 ---
-# Forward an AAP job-failure notification into Automation Orchestrator.
-# Used by the "AO | Forward Job Failure" job template so AO can triage
-# failed jobs via the aap-job-failed webhook trigger.
+# Forward an AAP job-failure into Automation Orchestrator.
+# Used by "AO | Forward Job Failure" (notification, workflow on-failure, or manual launch).
 - name: Forward job failure to Automation Orchestrator
   hosts: localhost
   connection: local
@@ -11,12 +10,47 @@
     ao_client_id: "{{ ao_client_id | mandatory }}"
     ao_client_secret: "{{ ao_client_secret | mandatory }}"
     ao_webhook_path: "{{ ao_webhook_path | default('aap-job-failed') }}"
-    failed_job_id: "{{ failed_job_id | mandatory }}"
-    failed_job_name: "{{ failed_job_name | default('') }}"
+    failed_job_id: "{{ failed_job_id | default(0) }}"
+    failed_job_name: "{{ failed_job_name | default('AO Demo | Broken localhost playbook') }}"
+    aap_api_url: "{{ aap_api_url | default('https://aap-aap-operator.apps.127.0.0.1.nip.io') }}"
   tasks:
     - name: Skip recursive notifications from this forwarder
       ansible.builtin.meta: end_play
       when: "'Forward Job Failure' in (failed_job_name | string)"
+
+    - name: Resolve latest failed job when failed_job_id was not provided
+      when: (failed_job_id | int) == 0
+      block:
+        - name: Require AAP API credential for job lookup
+          ansible.builtin.assert:
+            that:
+              - aap_api_username is defined
+              - aap_api_password is defined
+            fail_msg: >-
+              failed_job_id is 0/missing; provide failed_job_id or attach an AAP API credential
+              that injects aap_api_username / aap_api_password.
+
+        - name: Look up latest failed job by name
+          ansible.builtin.uri:
+            url: >-
+              {{ aap_api_url }}/api/controller/v2/jobs/?name={{ failed_job_name | urlencode }}&status=failed&order_by=-finished&page_size=1
+            user: "{{ aap_api_username }}"
+            password: "{{ aap_api_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: [200]
+          register: failed_jobs_lookup
+          no_log: true
+
+        - name: Require at least one failed job match
+          ansible.builtin.assert:
+            that:
+              - failed_jobs_lookup.json.results | length > 0
+            fail_msg: "No failed jobs found named '{{ failed_job_name }}'"
+
+        - name: Set failed_job_id from lookup
+          ansible.builtin.set_fact:
+            failed_job_id: "{{ failed_jobs_lookup.json.results[0].id }}"
 
     - name: Obtain AO service account token
       ansible.builtin.uri:
@@ -44,11 +78,11 @@
           job_id: "{{ failed_job_id | int }}"
           name: "{{ failed_job_name }}"
           status: "{{ failed_job_status | default('failed') }}"
-          source: aap-notification
+          source: aap-forwarder
         validate_certs: false
         status_code: [202]
       register: ao_webhook
 
     - name: Show AO workflow execution id
       ansible.builtin.debug:
-        msg: "AO workflow started: {{ ao_webhook.json.execution_id | default(ao_webhook.json) }}"
+        msg: "AO workflow started: {{ ao_webhook.json.execution_id | default(ao_webhook.json) }} for job {{ failed_job_id }}"
